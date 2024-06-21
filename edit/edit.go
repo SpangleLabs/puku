@@ -1,6 +1,7 @@
 package edit
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/please-build/buildtools/build"
@@ -117,7 +118,7 @@ func BoolAttr(rule *build.Rule, attrName string) bool {
 	return ident.Name == "True"
 }
 
-func NewGoRepoRule(mod, version, download string, licences []string) *build.CallExpr {
+func NewGoRepoRule(mod, version, download string, licences []string, labels []string) *build.CallExpr {
 	rule := build.NewRule(&build.CallExpr{
 		X:    &build.Ident{Name: "go_repo"},
 		List: []build.Expr{},
@@ -131,6 +132,9 @@ func NewGoRepoRule(mod, version, download string, licences []string) *build.Call
 	}
 	if len(licences) != 0 {
 		rule.SetAttr("licences", NewStringList(licences))
+	}
+	if len(labels) != 0 {
+		rule.SetAttr("labels", NewStringList(labels))
 	}
 	return rule.Call
 }

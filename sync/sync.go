@@ -3,6 +3,7 @@ package sync
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/please-build/buildtools/build"
 	"github.com/please-build/buildtools/labels"
@@ -78,7 +79,7 @@ func (s *syncer) sync() error {
 	return nil
 }
 
-func (s *syncer) syncModFile(conf *config.Config, file *build.File, exitingRules map[string]*build.Rule) error {
+func (s *syncer) syncModFile(conf *config.Config, file *build.File, existingRules map[string]*build.Rule) error {
 	outs, err := please.Build(conf.GetPlzPath(), s.plzConf.ModFile())
 	if err != nil {
 		return err
@@ -100,27 +101,32 @@ func (s *syncer) syncModFile(conf *config.Config, file *build.File, exitingRules
 
 	for _, req := range f.Require {
 		reqVersion := req.Mod.Version
-		var replace *modfile.Replace
+		var matchingReplace *modfile.Replace
 		for _, r := range f.Replace {
 			if r.Old.Path == req.Mod.Path {
+				matchingReplace = r
 				reqVersion = r.New.Version
-				if r.New.Path == req.Mod.Path { // we are just replacing version so don't need a replace
-					continue
-				}
-				replace = r
 			}
 		}
 
 		// Existing rule will point to the go_mod_download with the version on it so we should use the original path
-		r, ok := exitingRules[req.Mod.Path]
+		rule, ok := existingRules[req.Mod.Path]
 		if ok {
-			if replace != nil && r.Kind() == "go_repo" {
-				// Looks like we've added in a replace for this module so we need to delete the old go_repo rule
-				// and regen with a go_mod_download and a go_repo.
-				edit.RemoveTarget(file, r)
+			if matchingReplace != nil && matchingReplace.New.Path != req.Mod.Path && rule.Kind() == "go_repo" {
+				// Looks like we've added in a replace directive for this module which changes the path, so we need to
+				// delete the old go_repo rule and regen with a go_mod_download and a go_repo.
+				edit.RemoveTarget(file, rule)
 			} else {
 				// Make sure the version is up-to-date
-				r.SetAttr("version", edit.NewStringExpr(reqVersion))
+				rule.SetAttr("version", edit.NewStringExpr(reqVersion))
+				// Add labels for the replace directive's comments
+				if matchingReplace != nil {
+					err := edit.AddLabels(rule, replaceLabels(matchingReplace))
+					if err != nil {
+						return fmt.Errorf("failed to add replace labels to %v: %v", req.Mod.Path, err)
+					}
+				}
+				// No other changes needed
 				continue
 			}
 		}
@@ -130,17 +136,54 @@ func (s *syncer) syncModFile(conf *config.Config, file *build.File, exitingRules
 			return fmt.Errorf("failed to get licences for %v: %v", req.Mod.Path, err)
 		}
 
-		if replace == nil {
-			file.Stmt = append(file.Stmt, edit.NewGoRepoRule(req.Mod.Path, reqVersion, "", ls))
+		// If no replace directive, or replace directive is just replacing the version, add a simple rule
+		if matchingReplace == nil || matchingReplace.New.Path == req.Mod.Path {
+			file.Stmt = append(file.Stmt, edit.NewGoRepoRule(req.Mod.Path, reqVersion, "", ls, replaceLabels(matchingReplace)))
 			continue
 		}
 
-		dl, dlName := edit.NewModDownloadRule(replace.New.Path, replace.New.Version, ls)
+		dl, dlName := edit.NewModDownloadRule(matchingReplace.New.Path, matchingReplace.New.Version, ls)
 		file.Stmt = append(file.Stmt, dl)
-		file.Stmt = append(file.Stmt, edit.NewGoRepoRule(req.Mod.Path, "", dlName, nil))
+		file.Stmt = append(file.Stmt, edit.NewGoRepoRule(req.Mod.Path, "", dlName, nil, replaceLabels(matchingReplace)))
 	}
 
 	return nil
+}
+
+func commentsAsStrings(replace *modfile.Replace) []string {
+	// Get the comments from the replace directive
+	if replace == nil || replace.Syntax == nil {
+		return []string{}
+	}
+	comments := replace.Syntax.Comment()
+	if comments == nil {
+		return []string{}
+	}
+	// Trim space from comments on the suffix and before the replace directive
+	var commentStrings []string
+	for _, comment := range append(comments.Suffix, comments.Before...) {
+		commentStrings = append(commentStrings, strings.TrimSpace(comment.Token))
+	}
+	return commentStrings
+}
+
+func replaceLabels(replace *modfile.Replace) []string {
+	var labelStrings []string
+	if replace == nil {
+		return labelStrings
+	}
+	// TODO: jrfjsreformat
+	// TODO: remove the old ones
+
+	// Format any comments on the replace directive as labels
+	for _, commentString := range commentsAsStrings(replace) {
+		labelStrings = append(labelStrings, fmt.Sprintf("replace:%s", commentString))
+	}
+	// If there were no comments, ensure at least one `replace:` label
+	if len(labelStrings) == 0 {
+		labelStrings = append(labelStrings, "replace:")
+	}
+	return labelStrings
 }
 
 func (s *syncer) readModules(file *build.File) (map[string]*build.Rule, error) {
