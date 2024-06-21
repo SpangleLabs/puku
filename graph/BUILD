@@ -6,7 +6,6 @@ go_library(
         "//generate/integration/syncmod:all",
         "//licences:all",
         "//migrate:all",
-        "//modfile:all",
         "//cmd/puku:all",
         "//sync:all",
         "//sync/integration/syncmod:all",
