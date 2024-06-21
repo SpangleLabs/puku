@@ -145,3 +145,41 @@ func NewModDownloadRule(mod, version string, licences []string) (*build.CallExpr
 	}
 	return rule.Call, rule.Name()
 }
+
+// AddLabel adds a specified string label to a build Rule's labels, unless it already exists
+func AddLabel(rule *build.Rule, label string) error {
+	// Fetch the labels expression, or initialise it
+	ruleLabels := rule.Attr("labels")
+	if ruleLabels == nil {
+		ruleLabels = &build.ListExpr{}
+	}
+	// Check it's a list of expressions
+	ruleLabelsList, ok := ruleLabels.(*build.ListExpr)
+	if !ok {
+		return errors.New("rule already has a `labels` attribute, and it is not a list")
+	}
+	for _, labelExpr := range ruleLabelsList.List {
+		// Ignore any non-string labels
+		labelStringExpr, ok := labelExpr.(*build.StringExpr)
+		if !ok {
+			continue
+		}
+		// If a matching label already exists, no need to do anything
+		if labelStringExpr.Value == label {
+			return nil
+		}
+	}
+	ruleLabelsList.List = append(ruleLabelsList.List, NewStringExpr(label))
+	return nil
+}
+
+// AddLabels adds a list of string labels to a given build rule
+func AddLabels(rule *build.Rule, labels []string) error {
+	for _, labelString := range labels {
+		err := AddLabel(rule, labelString)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
